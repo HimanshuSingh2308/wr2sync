@@ -2,8 +2,9 @@
  * Created by xiaohe on 2016/12/9.
  * client functions for web-sync
  */
-import io from 'socket.io-client';
+import io from 'socket.io-client/dist/socket.io';
 import BSync from './bit-sync';
+import * as queue from './queue';
 
 // Check for the various File API support.
 if (window.File && window.FileReader && window.FileList && window.Blob) {
@@ -15,19 +16,28 @@ if (window.File && window.FileReader && window.FileList && window.Blob) {
 
 var lock = true;
 var current_file = null;
+var current_job = null;
 var block_size =  64 *1024;
 var chunkSize  =  1024 * 1024 * 1024; // bytes
 var timetamp;
 var checksum_timetamp;
 var test_start_time = (new Date()).getTime();
 var traffic;
-var job_not_running = true;
-var queue = Array();
-
 var test_hash_average = 0;
 var test_hash_times = 0;
 
-var socket = io.connect('http://'+'localhost' + ':8001');
+
+// var socket = io.connect('http://'+'35.154.121.6' + ':8001');
+var socket = io('http://'+'13.127.205.136' + ':8001',{transports: ['websocket']});
+socket.on('reconnect_attempt',function(){
+    socket.io.opts.transports = ['webspcket','polling'];
+});
+
+socket.on('reconnect',function(){
+    socket.io.opts.transports = ['webspcket'];
+    console.log('helllo switching to websockets');
+})
+
 socket.on('matchdoc',function(req){
     traffic += req.matchdoc.byteLength;
     console.log("<<receive matchdoc of ",req.filename);
@@ -38,13 +48,15 @@ socket.on('matchdoc',function(req){
 socket.on('error',function(error){
     console.log('error while syncing ',error);
     lock= true;
-    queue.push(current_file);
-    setTimeout(retryFailedJobs, 5000);
+    if(current_job) {
+        queue.requeue(current_job);
+    }
 });
 
 socket.on('SyncOver',function(req){
     lock = true;
     current_file = null;
+    current_job = null;
     console.log('<<receive sync success');
     var d = new Date();
     var t = d.getTime() - timetamp.getTime();
@@ -129,7 +141,7 @@ function createPatchBlocks(matchdoc){
         var t = d.getTime() - checksum_timetamp.getTime();
         console.info(current_file.name,'patchdoc time is',t,'ms');
         console.log('patchdoc from',start,'to',stop,':',doc_offset,current_file.size);
-        var x = patchdoc.slice(0,stop)
+        var x = patchdoc.slice(0,doc_offset);
         //emit the patchdoc
         traffic += doc_offset;
         console.log('debugg',traffic);
@@ -190,28 +202,10 @@ function parseFile(file, callback) {
  * @param: block_size : bytes
  */
 
-function retryFailedJobs(){
-    if(job_not_running) {
-        job_not_running = false;
-        var retry = setInterval(()=>{
-            console.log("retrying --> ");
-            if(lock && queue.length){
-                load_blocks(queue.shift());
-            } else if(!queue.length) {
-                job_not_running = true;
-                console.log('all done');
-                clearInterval(retry);
-            }
-        },2000);
-    } else {
-        return ;
-    }
 
-}
-
-
-export const load_blocks = function (file) {
+export const load_blocks = function (job) {
     // block_size = blockSize;
+    console.log('hello world');
     if(lock) {
         lock = false;
         traffic = 0;
@@ -221,21 +215,25 @@ export const load_blocks = function (file) {
 
     else{
         console.log('wait for lock of parsing file');
-        queue.push(file);
-        retryFailedJobs();
         return;
     }
 
-    if (!file) {
+    if (!job.file) {
         alert('Please select a file!');
         return;
     }
-    current_file = file;
+    current_file = job.file;
+    current_job = job;
 
     if(!current_file.size) {
         lock = true;
+        current_file = null ;
+        current_job = null ;
         console.log('size 0');
+        return ;
     }
+
+
     var all_numBlocks = Math.ceil(current_file.size / block_size);
     var i=0;
     var all_docLength =
@@ -318,4 +316,16 @@ function stop_test(){
         console.log('stop_test');
     }
 }
+
+export const lockStatus = function () {
+    return lock;
+} 
+
+export const removeLock =  function (job) {
+    lock = true;
+    console.log('removing the lock');
+    if( current_job && current_job.id == job.id) {
+        queue.requeue(current_job);
+    }
+}   
 
