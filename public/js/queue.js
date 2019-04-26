@@ -32,7 +32,7 @@ const startSyncing = (delay , ttl) => {
             load_blocks(newJob);
 
             if(ttl) {
-              setTimeout(removeLock(newJob), ttl * 1000);
+              // setTimeout(removeLock(newJob), ttl * 1000);
             }
 
         } else if(!queue.length) {

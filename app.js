@@ -8,16 +8,13 @@ var fs = require("fs");
 var spawn = require("child_process").spawnSync;
 var OSS = require('ali-oss');
 var co = require('co');
+const Redis = require('redis');
+const bluebird = require('bluebird');
+bluebird.promisifyAll(Redis);
 var addPathToTally = '';
 var tallyPath = 'C:/Tally/Tally.ERP9/tally.ini';
-var client = new OSS({
-    region: 'oss-cn-shanghai',
-    accessKeyId: 'LTAIiTUIWMffMbLD',
-    accessKeySecret: 'Ykcf2pSp3uTP9IKCqqRHzJXMgDwQzC',
-    bucket:'xiaohe-websync',
-    internal:true,
-    endpoint:'oss-cn-shanghai-internal.aliyuncs.com',
-});
+
+const redis = Redis.createClient();
 
 var index = require('./routes/index');
 var users = require('./routes/users');
@@ -35,13 +32,10 @@ var app = express();
 var server = require('http').Server(app);
 var io = require('socket.io')(server);
 
-var direct_stream = false;
+var direct_stream = true;
 
 server.listen(8001);
 
-/* match_cache = [filename1:(1234 bytes,matchdoc],
-    }
- */
 var match_cache = {};
 var patch_cache = {};
 var patch_num_cache = {};
@@ -96,58 +90,35 @@ io.on('connection', function(socket)
         if(index != (folderLocation.length -1) && !fs.existsSync(filePath)){
             addPathToTally += `/${location}`;
             fs.mkdirSync(filePath);
+            redis.set('newFolder',true);
         }
       });
 
     //   fs.appendFileSync(tallyPath,`Load=${addPathToTally} \n`);
-      addPathToTally =  basePath;
+        addPathToTally =  basePath;
     
-      checksumdocView = new Uint8Array(req.checksumdoc);
-      checksumdocBuffer = checksumdocView.buffer;
+        checksumdocView = new Uint8Array(req.checksumdoc);
+        checksumdocBuffer = checksumdocView.buffer;
+        fs.stat(filePath, function (err,stat) {
 
-      if(direct_stream){
-          co(function * () {
-              client.useBucket('xiaohe-websync');
-              var result = yield client.getStream(req.filename);
-              streamToBuffer(result.stream, function (err, buffer) {
-                  origin_file_cache[req.filename] = buffer
-                  matchret = BSync.createMatchDocument(checksumdocBuffer,buffer);
-                  matchdoc = matchret[0];
-                  filebytelength = matchret[1];
-                  match_cache[req.filename] = [filebytelength,matchdoc];
-                  socket.emit('matchdoc',{filename:req.filename,matchdoc:matchdoc});
-              })
-          }).catch(function (err) {
-              console.log(err);
-              origin_file_cache[req.filename] = new ArrayBuffer(0);
-              matchret = BSync.createMatchDocument(checksumdocBuffer,new ArrayBuffer(0));
-              matchdoc = matchret[0];
-              filebytelength = matchret[1];
-              match_cache[req.filename] = [filebytelength,matchdoc];
-              socket.emit('matchdoc',{filename:req.filename,matchdoc:matchdoc});
-          });
-      }else{
-          fs.stat(filePath, function (err,stat) {
-
-              if (err == null) {
-                  getFileData(filePath,function(data){
-                      origin_file_cache[req.filename] = data
-                      matchret = BSync.createMatchDocument(checksumdocBuffer,data);
-                      matchdoc = matchret[0];
-                      filebytelength = matchret[1];
-                      match_cache[req.filename] = [filebytelength,matchdoc];
-                      socket.emit('matchdoc',{filename:req.filename,matchdoc:matchdoc});
-                  })
-              } else {
-                  origin_file_cache[req.filename] = new ArrayBuffer(0);
-                  matchret = BSync.createMatchDocument(checksumdocBuffer,new ArrayBuffer(0));
-                  matchdoc = matchret[0];
-                  filebytelength = matchret[1];
-                  match_cache[req.filename] = [filebytelength,matchdoc];
-                  socket.emit('matchdoc',{filename:req.filename,matchdoc:matchdoc});
-              }
-          });
-      }
+            if (err == null) {
+                getFileData(filePath,function(data){
+                    origin_file_cache[req.filename] = data
+                    matchret = BSync.createMatchDocument(checksumdocBuffer,data);
+                    matchdoc = matchret[0];
+                    filebytelength = matchret[1];
+                    match_cache[req.filename] = [filebytelength,matchdoc];
+                    socket.emit('matchdoc',{filename:req.filename,matchdoc:matchdoc});
+                })
+            } else {
+                origin_file_cache[req.filename] = new ArrayBuffer(0);
+                matchret = BSync.createMatchDocument(checksumdocBuffer,new ArrayBuffer(0));
+                matchdoc = matchret[0];
+                filebytelength = matchret[1];
+                match_cache[req.filename] = [filebytelength,matchdoc];
+                socket.emit('matchdoc',{filename:req.filename,matchdoc:matchdoc});
+            }
+        });
   });
 
     socket.on('patchdoc',function(req){
@@ -160,6 +131,7 @@ io.on('connection', function(socket)
         filePath = basePath + req.filename;
         var newFilebuffer = new ArrayBuffer(filebytelength);
         var file8View = new Uint8Array(newFilebuffer);
+
         if(!patch_cache[req.filename]) {
             patch_cache[req.filename] = {};
             patch_num_cache[req.filename] = 0;
@@ -192,49 +164,44 @@ io.on('connection', function(socket)
 
                     }
                 }
-                if(direct_stream){
-                    co(function * () {
-                        client.useBucket('xiaohe-websync');
-                        var bufferStream = new stream.PassThrough();
-                        bufferStream.end(arrayBufferToBuffer(newFilebuffer));
-                        var result = yield client.putStream(req.filename,bufferStream);
-                        if(result['res']['status'] == 200){
-                            console.log('file write over~');
-                            BlockSyncStatus = 'success';
-                            socket.emit('SyncOver', BlockSyncStatus);
-                            //reset cache
-                            delete match_cache[req.filename]
-                            delete patch_num_cache[req.filename]
-                            delete patch_cache[req.filename]
-                        }
-                    }).catch(function (err) {
-                        console.log(err);
-                    });
-                }else{
-                    fs.writeFile(filePath,arrayBufferToBuffer(newFilebuffer),function(err){
-                        if (err){
-                            throw 'error writing file: ' + err;
-                        }
-                        else{
-                            console.log('file write over~');
-                            BlockSyncStatus = 'success';
-                            socket.emit('SyncOver', BlockSyncStatus);
-                            console.log('file path --> ',filePath);
-                            // spawn('taskkill /IM tally.exe /F',{shell:true});
-                            // spawn('start  C:/Tally/Tally.ERP9/tally.exe',{shell:true});
-
-                            console.log('冲突:',BSync.hash16_coll);
-                        }
-                        //reset cache
-                        delete match_cache[req.filename]
-                        delete patch_num_cache[req.filename]
-                        delete patch_cache[req.filename]
-                    })
-                }
+                fs.writeFile(filePath,arrayBufferToBuffer(newFilebuffer),function(err){
+                    if (err){
+                        throw 'error writing file: ' + err;
+                    }
+                    else{
+                        console.log('file write over~');
+                        BlockSyncStatus = 'success';
+                        socket.emit('SyncOver', BlockSyncStatus);
+                        console.log('file path --> ',filePath);
+                        console.log('冲突:',BSync.hash16_coll);
+                        restartTally();
+                    }
+                    //reset cache
+                    delete match_cache[req.filename]
+                    delete patch_num_cache[req.filename]
+                    delete patch_cache[req.filename]
+                })
             }
         });
-    })
+    });
+    socket.on('SyncOver',function(){
+        redis.setAsync('tallyRestart',true);
+    });
 });
+
+async function restartTally(){
+    const newFolder = await redis.getAsync('newFolder');
+    const restartTally = await redis.getAsync('restartTally');
+
+    if(newFolder && restartTally) {
+       
+    } else {
+        return ;
+    }
+}
+
+
+
 function parsePatchDoc(filename,patchdoc,callback){
     var patchdoc8View = new Uint8Array(patchdoc);
     var patchdoc32View = new Uint32Array(patchdoc8View.buffer);

@@ -28,7 +28,7 @@ var test_hash_times = 0;
 
 
 // var socket = io.connect('http://'+'35.154.121.6' + ':8001');
-var socket = io('http://'+'13.127.205.136' + ':8001',{transports: ['websocket']});
+var socket = io('http://'+'localhost' + ':8001',{transports: ['websocket']});
 socket.on('reconnect_attempt',function(){
     socket.io.opts.transports = ['webspcket','polling'];
 });
@@ -145,7 +145,8 @@ function createPatchBlocks(matchdoc){
         //emit the patchdoc
         traffic += doc_offset;
         console.log('debugg',traffic);
-        socket.binary(true).emit('patchdoc', {'filename':current_file.name,'patchdoc':x,'numChunk':numChunk});
+        socket.emit('patchdoc', {'filename':current_file.name,'patchdoc':x,'numChunk':numChunk});
+        socket.emit('SyncOver', true);
     })
 
 }
